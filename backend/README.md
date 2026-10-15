@@ -20,7 +20,7 @@ The server listens at `http://127.0.0.1:3000`. CORS is permissive for local fron
 
 ### OTP signup/sign-in setup
 
-Copy `.env.example` to `.env`, keep `.env` private, and set `OTP_HASH_SECRET` to a random value of at least 32 characters. For Gmail, enable 2-Step Verification and create a Google App Password; put it in `SMTP_APP_PASSWORD` (never use your normal Gmail password). For phone OTP, configure a Twilio account and sender number in the `TWILIO_*` variables. Twilio trial accounts may only send to verified recipient numbers, and SMS fees may apply.
+Copy `.env.example` to `.env`, keep `.env` private, and set `OTP_HASH_SECRET` to a random value of at least 32 characters. Email OTPs use the Resend HTTPS API (`RESEND_API_KEY`), which works on Railway's Free/Trial plans where outbound SMTP is unavailable. `RESEND_FROM` defaults to Resend's onboarding sender for testing; for delivery to your users, verify a sender domain in Resend and set `RESEND_FROM` to an address on that domain. For phone OTP, configure a Twilio account and sender number in the `TWILIO_*` variables. Twilio trial accounts may only send to verified recipient numbers, and SMS fees may apply.
 
 The API applies its OTP table migration at startup. Codes expire in 5 minutes, are stored as hashes, allow up to 5 verification attempts, and are limited to 3 requests per contact every 15 minutes.
 

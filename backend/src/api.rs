@@ -12,11 +12,6 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, patch, post},
 };
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::Mailbox,
-    transport::smtp::authentication::Credentials,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -215,32 +210,41 @@ async fn customer_for_contact(
 async fn deliver_otp(contact: &str, channel: OtpChannel, code: &str) -> ApiResult<()> {
     match channel {
         OtpChannel::Email => {
-            let username = std::env::var("SMTP_USERNAME").ok().filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| ApiError::service_unavailable("Email OTP is not configured: set SMTP_USERNAME and SMTP_APP_PASSWORD"))?;
-            let password = std::env::var("SMTP_APP_PASSWORD").ok().filter(|v| !v.trim().is_empty())
-                .ok_or_else(|| ApiError::service_unavailable("Email OTP is not configured: set SMTP_APP_PASSWORD"))?;
-            let from_address = std::env::var("SMTP_FROM").unwrap_or_else(|_| username.clone());
-            let host = std::env::var("SMTP_HOST").unwrap_or_else(|_| "smtp.gmail.com".to_string());
-            let from: Mailbox = format!("SwiftCart <{}>", from_address.trim())
-                .parse()
-                .map_err(|_| ApiError::service_unavailable("SMTP_FROM is not a valid email address"))?;
-            let to: Mailbox = contact.parse()
-                .map_err(|_| ApiError::bad_request("Enter a valid email address"))?;
-            let message = Message::builder()
-                .from(from)
-                .to(to)
-                .subject("Your SwiftCart verification code")
-                .body(format!("Your SwiftCart verification code is {code}. It expires in 5 minutes. Do not share this code."))
-                .map_err(|_| ApiError::service_unavailable("Could not prepare the verification email"))?;
-            let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host.trim())
-                .map_err(|_| ApiError::service_unavailable("Could not configure the email server"))?
-                .credentials(Credentials::new(username.trim().to_string(), password.split_whitespace().collect()))
-                .timeout(Some(Duration::from_secs(12)))
-                .build();
-            mailer.send(message).await.map_err(|error| {
-                eprintln!("Email OTP delivery failed: {error}");
-                ApiError::bad_gateway("Email provider could not deliver the verification code")
-            })?;
+            let api_key = std::env::var("RESEND_API_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    ApiError::service_unavailable(
+                        "Email OTP is not configured: set RESEND_API_KEY",
+                    )
+                })?;
+            let from = std::env::var("RESEND_FROM")
+                .unwrap_or_else(|_| "SwiftCart <onboarding@resend.dev>".to_string());
+            let text = format!(
+                "Your SwiftCart verification code is {code}. It expires in 5 minutes. Do not share this code."
+            );
+            let response = reqwest::Client::new()
+                .post("https://api.resend.com/emails")
+                .bearer_auth(api_key.trim())
+                .json(&json!({
+                    "from": from.trim(),
+                    "to": [contact],
+                    "subject": "Your SwiftCart verification code",
+                    "text": text,
+                }))
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|error| {
+                    eprintln!("Resend OTP request failed: {error}");
+                    ApiError::bad_gateway("Could not reach the email provider")
+                })?;
+            if !response.status().is_success() {
+                eprintln!("Resend OTP provider returned HTTP {}", response.status());
+                return Err(ApiError::bad_gateway(
+                    "Email provider could not deliver the verification code",
+                ));
+            }
         }
         OtpChannel::Phone => {
             let sid = std::env::var("TWILIO_ACCOUNT_SID").ok().filter(|v| !v.trim().is_empty())
