@@ -12,6 +12,7 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, patch, post},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -210,6 +211,27 @@ async fn customer_for_contact(
 async fn deliver_otp(contact: &str, channel: OtpChannel, code: &str) -> ApiResult<()> {
     match channel {
         OtpChannel::Email => {
+            let gmail_client_id = configured_env("GMAIL_CLIENT_ID");
+            let gmail_client_secret = configured_env("GMAIL_CLIENT_SECRET");
+            let gmail_refresh_token = configured_env("GMAIL_REFRESH_TOKEN");
+            if gmail_client_id.is_some()
+                || gmail_client_secret.is_some()
+                || gmail_refresh_token.is_some()
+            {
+                let client_id = gmail_client_id.ok_or_else(|| {
+                    ApiError::service_unavailable("Gmail API setup is incomplete: set GMAIL_CLIENT_ID")
+                })?;
+                let client_secret = gmail_client_secret.ok_or_else(|| {
+                    ApiError::service_unavailable("Gmail API setup is incomplete: set GMAIL_CLIENT_SECRET")
+                })?;
+                let refresh_token = gmail_refresh_token.ok_or_else(|| {
+                    ApiError::service_unavailable("Gmail API setup is incomplete: set GMAIL_REFRESH_TOKEN")
+                })?;
+                return deliver_gmail_otp(contact, code, &client_id, &client_secret, &refresh_token).await;
+            }
+
+            // Keep Resend available as a fallback for deployments that have not
+            // yet been configured with Gmail OAuth credentials.
             let api_key = std::env::var("RESEND_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
@@ -271,6 +293,79 @@ async fn deliver_otp(contact: &str, channel: OtpChannel, code: &str) -> ApiResul
                 return Err(ApiError::bad_gateway("SMS provider could not deliver the verification code"));
             }
         }
+    }
+    Ok(())
+}
+
+fn configured_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenResponse {
+    access_token: String,
+}
+
+async fn deliver_gmail_otp(
+    contact: &str,
+    code: &str,
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> ApiResult<()> {
+    let client = reqwest::Client::new();
+    let token_response = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ])
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|error| {
+            eprintln!("Google OAuth token request failed: {error}");
+            ApiError::bad_gateway("Could not reach Google to send the verification code")
+        })?;
+    if !token_response.status().is_success() {
+        eprintln!("Google OAuth token endpoint returned HTTP {}", token_response.status());
+        return Err(ApiError::bad_gateway(
+            "Gmail authorization failed. Check the Google OAuth variables in the backend settings.",
+        ));
+    }
+    let token: GoogleTokenResponse = token_response.json().await.map_err(|error| {
+        eprintln!("Could not read Google OAuth token response: {error}");
+        ApiError::bad_gateway("Google returned an invalid authorization response")
+    })?;
+
+    let text = format!(
+        "Your SwiftCart verification code is {code}. It expires in 5 minutes. Do not share this code."
+    );
+    let message = format!(
+        "To: {contact}\r\nSubject: Your SwiftCart verification code\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{text}"
+    );
+    let raw = URL_SAFE_NO_PAD.encode(message.as_bytes());
+    let response = client
+        .post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
+        .bearer_auth(token.access_token)
+        .json(&json!({ "raw": raw }))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|error| {
+            eprintln!("Gmail API send request failed: {error}");
+            ApiError::bad_gateway("Could not reach Gmail to send the verification code")
+        })?;
+    if !response.status().is_success() {
+        eprintln!("Gmail API returned HTTP {} while sending OTP", response.status());
+        return Err(ApiError::bad_gateway(
+            "Gmail could not send the verification code. Check OAuth access and Gmail sending limits.",
+        ));
     }
     Ok(())
 }

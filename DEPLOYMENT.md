@@ -16,7 +16,7 @@ To migrate existing records instead, export the local database and import it int
    - `DATABASE_URL`: reference the MySQL service's private `MYSQL_URL` variable.
    - `CORS_ORIGINS`: the exact deployed Vercel origin, without a trailing slash.
    - `OTP_HASH_SECRET`: a newly generated random secret of at least 32 characters.
-   - `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_APP_PASSWORD`, and `SMTP_FROM` if email OTP delivery is required.
+   - `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, and `GMAIL_REFRESH_TOKEN` for Gmail API email OTP. Keep these private. Gmail OAuth Testing mode expires authorization after 7 days. Alternatively, use `RESEND_API_KEY` and `RESEND_FROM`.
    - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_FROM_NUMBER` if SMS OTP delivery is required.
 4. Generate a public domain for the backend service. The service binds to Railway's `PORT` and exposes `/health` as its health endpoint.
 
